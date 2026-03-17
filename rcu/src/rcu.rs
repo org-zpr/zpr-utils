@@ -35,6 +35,7 @@ compile_error!("exactly one rcu-* feature must be selected");
 )))]
 compile_error!("exactly one rcu-* feature must be selected");
 
+
 #[cfg(any(feature = "rcu-rwlock", doc))]
 mod rcu_impl {
     use std::sync::{RwLock, RwLockReadGuard};
@@ -269,7 +270,7 @@ mod rcu_impl {
     pub struct RcuBox<T: 'static>(aarc::AtomicArc<T>, Mutex<()>);
 
     pub struct RcuGuard<'a, T: 'static> {
-        guard: aarc::Guard<T>,
+        guard: aarc::Guard<'a, T>,
         phantom: std::marker::PhantomData<&'a T>,
     }
 

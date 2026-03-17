@@ -5,15 +5,15 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-bytes = { workspace = true, optional = true }
-libc = { workspace = true }
-nix = { workspace = true, features = ["ioctl", "net", "socket"] }
-socket2 = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["net"], optional = true }
-zerocopy = { workspace = true, optional = true }
+bytes = { version = "1.11.1", optional = true }
+libc = { version = "0.2.175" }
+nix = { version = "0.29.0", features = ["ioctl", "net", "socket"] }
+socket2 = { version = "0.5.7", optional = true }
+tokio = { version = "1.48.0", features = ["net"], optional = true }
+zerocopy = { version = "0.8.3", optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "time", "rt"] }
+tokio = { version = "1.48.0", features = ["macros", "time", "rt"] }
 
 [features]
 # Each feature flag is the name of a library the user is already using
