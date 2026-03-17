@@ -1,4 +1,4 @@
-name: Rust-zprext
+name: Rust-zprutils
 
 on:
   push:

@@ -1,4 +1,4 @@
-name: Rust-zprext
+name: Rust-rcu
 
 on:
   push:
@@ -25,5 +25,6 @@ jobs:
     with:
       name: 'RCU'
       path: './rcu'
+      features: 'rcu-crossbeam-epoch'
     secrets: 
       ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
