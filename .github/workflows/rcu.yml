@@ -1,0 +1,29 @@
+name: Rust-zprext
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'rcu/**'
+      - '.github/workflows/rcu.yml'
+  pull_request:
+    paths:
+      - 'rcu/**'
+      - '.github/workflows/rcu.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  zpr-ext:
+    name: RCU
+    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.2
+    with:
+      name: 'RCU'
+      path: './rcu'
+    secrets: 
+      ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
