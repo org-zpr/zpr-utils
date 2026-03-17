@@ -35,7 +35,6 @@ compile_error!("exactly one rcu-* feature must be selected");
 )))]
 compile_error!("exactly one rcu-* feature must be selected");
 
-
 #[cfg(any(feature = "rcu-rwlock", doc))]
 mod rcu_impl {
     use std::sync::{RwLock, RwLockReadGuard};
