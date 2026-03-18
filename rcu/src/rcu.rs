@@ -17,13 +17,19 @@
 
 #![allow(dead_code)]
 
-#[cfg(all(
-    feature = "rcu-aarc",
-    feature = "rcu-arc-swap",
-    feature = "rcu-crossbeam-epoch",
-    feature = "rcu-mutex-arc",
-    feature = "rcu-rwlock",
+#[cfg(any(
+    all(feature = "rcu-aarc", feature = "rcu-arc-swap"),
+    all(feature = "rcu-aarc", feature = "rcu-crossbeam-epoch"),
+    all(feature = "rcu-aarc", feature = "rcu-mutex-arc"),
+    all(feature = "rcu-aarc", feature = "rcu-rwlock"),
+    all(feature = "rcu-arc-swap", feature = "rcu-crossbeam-epoch"),
+    all(feature = "rcu-arc-swap", feature = "rcu-mutex-arc"),
+    all(feature = "rcu-arc-swap", feature = "rcu-rwlock"),
+    all(feature = "rcu-crossbeam-epoch", feature = "rcu-mutex-arc"),
+    all(feature = "rcu-crossbeam-epoch", feature = "rcu-rwlock"),
+    all(feature = "rcu-mutex-arc", feature = "rcu-rwlock"),
 ))]
+
 compile_error!("exactly one rcu-* feature must be selected");
 
 #[cfg(not(any(
@@ -35,7 +41,7 @@ compile_error!("exactly one rcu-* feature must be selected");
 )))]
 compile_error!("exactly one rcu-* feature must be selected");
 
-#[cfg(any(feature = "rcu-rwlock", doc))]
+#[cfg(any(all(feature = "rcu-rwlock", not(doc)), doc))]
 mod rcu_impl {
     use std::sync::{RwLock, RwLockReadGuard};
 
