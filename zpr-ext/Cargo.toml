@@ -1,0 +1,25 @@
+[package]
+name = "zpr-ext"
+version = "0.5.3"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+bytes = { version = "1.11.1", optional = true }
+libc = { version = "0.2.175" }
+nix = { version = "0.29.0", features = ["ioctl", "net", "socket"] }
+socket2 = { version = "0.5.7", optional = true }
+tokio = { version = "1.48.0", features = ["net"], optional = true }
+zerocopy = { version = "0.8.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.48.0", features = ["macros", "time", "rt"] }
+
+[features]
+# Each feature flag is the name of a library the user is already using
+# and would like to have "extended".
+all = ["bytes", "socket2", "tokio", "zerocopy"]
+bytes = ["dep:bytes"]
+socket2 = ["dep:socket2"]
+tokio = ["dep:tokio"]
+zerocopy = ["dep:zerocopy"]

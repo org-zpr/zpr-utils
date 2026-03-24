@@ -1,0 +1,30 @@
+name: Rust-zprutils
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'zpr-utils/**'
+      - '.github/workflows/zprutils.yml'
+  pull_request:
+    paths:
+      - 'zpr-utils/**'
+      - '.github/workflows/zprutils.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  zpr-ext:
+    name: ZPR Utils
+    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.2
+    with:
+      name: 'ZPR-Utils'
+      path: './zpr-utils'
+      needs-capnp: true
+    secrets: 
+      ZPR_CICD_RO_TOKEN: ${{ secrets.ZPR_CICD_RO_TOKEN }}
