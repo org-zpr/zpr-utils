@@ -460,7 +460,6 @@ pub fn validate_inet_l4_checksum(
     ) == [0u8; 2]
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
