@@ -235,10 +235,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "internet-checksum"
-version = "0.2.1"
+name = "ip4sum"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc6d6206008e25125b1f97fbe5d309eb7b85141cf9199d52dbd3729a1584dd16"
+checksum = "5e1519785539e84d256e882053cc330fda5e7c65876fcb5553cb418e81888ab4"
 
 [[package]]
 name = "jobserver"
@@ -592,7 +592,7 @@ name = "zpr-utils"
 version = "0.2.1"
 dependencies = [
  "aws-lc-rs",
- "internet-checksum",
+ "ip4sum",
  "pem-rfc7468",
  "zerocopy",
  "zpr",

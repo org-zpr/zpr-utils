@@ -398,7 +398,7 @@ pub fn vsapi_ip_to_defs_ip(vsapi_proto: VsapiIpProtocol) -> Result<IpProtocol, &
 
 /// Add an IPv4/v6 pseudo-header to an Internet checksum.
 pub fn checksum_ip_pseudo_header(
-    csum: &mut internet_checksum::Checksum,
+    csum: &mut ip4sum::Checksum,
     ip_version: IpVersion,
     src_address: &IpAddress,
     dst_address: &IpAddress,
@@ -407,17 +407,17 @@ pub fn checksum_ip_pseudo_header(
 ) {
     match ip_version {
         4 => {
-            csum.add_bytes(&src_address.read_as_v4());
-            csum.add_bytes(&dst_address.read_as_v4());
-            csum.add_bytes(&[0u8, ip_protocol]);
-            csum.add_bytes(&(l4_length as u16).to_be_bytes());
+            csum.update(&src_address.read_as_v4());
+            csum.update(&dst_address.read_as_v4());
+            csum.update(&[0u8, ip_protocol]);
+            csum.update(&(l4_length as u16).to_be_bytes());
         }
 
         6 => {
-            csum.add_bytes(&src_address.v6);
-            csum.add_bytes(&dst_address.v6);
-            csum.add_bytes(&l4_length.to_be_bytes());
-            csum.add_bytes(&[0u8, ip_protocol]); // technically should have two more leading 0 bytes, but these do not affect the result
+            csum.update(&src_address.v6);
+            csum.update(&dst_address.v6);
+            csum.update(&l4_length.to_be_bytes());
+            csum.update(&[0u8, ip_protocol]); // technically should have two more leading 0 bytes, but these do not affect the result
         }
 
         _ => panic!("bad IP version"),
@@ -431,7 +431,7 @@ pub fn inet_l4_checksum(
     ip_protocol: IpProtocol,
     l4_payload: &[u8],
 ) -> [u8; 2] {
-    let mut csum = internet_checksum::Checksum::new();
+    let mut csum = ip4sum::Checksum::new();
     checksum_ip_pseudo_header(
         &mut csum,
         ip_version,
@@ -440,8 +440,8 @@ pub fn inet_l4_checksum(
         ip_protocol,
         l4_payload.len() as u32,
     );
-    csum.add_bytes(l4_payload);
-    csum.checksum()
+    csum.update(l4_payload);
+    csum.finalize().to_be_bytes()
 }
 
 pub fn validate_inet_l4_checksum(
@@ -504,6 +504,14 @@ mod tests {
                 [0u8; 2]
             );
         }
+    }
+
+    #[test]
+    fn test_checksum_handles_long_runs_of_ff() {
+        let payload = vec![0xff; u16::MAX as usize - 1];
+        let address = IpAddress::new_from_v4([0, 0, 0, 0]);
+
+        assert_eq!(inet_l4_checksum(4, &address, &address, 0, &payload), [0, 1]);
     }
 
     const L4_TEST_DATA: &[(IpVersion, IpAddress, IpAddress, IpProtocol, &[u8])] = &[
