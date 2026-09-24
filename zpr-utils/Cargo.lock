@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "zpr-utils"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aws-lc-rs",
  "ip4sum",
