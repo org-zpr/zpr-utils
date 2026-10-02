@@ -21,7 +21,7 @@ env:
 jobs:
   zpr-ext:
     name: ZPR Utils
-    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.2
+    uses: org-zpr/zpr-dev-tools/.github/workflows/rust-build-test.yml@v1.5.0
     with:
       name: 'ZPR-Utils'
       path: './zpr-utils'
