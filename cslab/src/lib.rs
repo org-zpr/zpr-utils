@@ -144,6 +144,37 @@ use sync::{
 // acquire ordering, so that [Rm] ⇒ [Sm] ensures that any get [G] which occurs
 // after having seen the item hidden by the decreased frontier also sees
 // the item actually marked for removal.
+//
+// Addendum: the use of the bitmap forces us to consider a third concurrency
+// story, namely that of an insert [I] of one element, followed by a removal
+// [R] of a different element whose flag shares the same bitmap word,
+// followed by a get [G] of the first element.  This is illustrated as follows:
+//
+//          WRITER                |        READER
+//                                |
+//   store item 0 [Ii]            |
+//        ↓                       |
+//   store flag 0 [Ib] (*release) |
+//        ↓                       |
+//   store flag 1 [Rb] (release)  |
+//                                ⇘
+//                                | (acquire) load flag 0 [Gb]
+//                                |               ↓
+//                                |           load item 0 [Gi]
+//
+// Note that, in this story, the release on [Ib] (marked with an asterisk)
+// is _not_ sufficient (or in fact necessary) to synchronize with the
+// acquire in [Gb]: the intervening store [Rb] to the same memory word
+// "masks" [Ib] in its entirety, including the release.  Therefore, [Rb]
+// must itself be a release operation, even though it is not required to be
+// for the [R] + [G] story.
+//
+// See <https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0982r1.html>
+// for an in-depth explanation of this type of interaction.  (Note that
+// Rust follows C++20 memory ordering semantics, which adopted this behavior.)
+//
+// This interaction and the fix of making [Rb] a release operation was found
+// with the help of GitHub Copilot and TLA+.
 
 union Entry<T> {
     next_free: isize, // offset to next empty; neighbor is 0 so zero-alloced array is initialized
@@ -662,9 +693,11 @@ impl<T> Cslab<T> {
         assert!((mask >> (idx % usize::BITS as usize)) & 1 == 1);
 
         // mark the item as free (but don't actually free it)
+        // (this is needed for the sequence [Ii] → [Ib] → [Rb] ⇒ [Gb] → [Gi]
+        // where [Ib] and [Rb] are to different indexes in the same bitmap word)
         self.storage.bitmap()[idx / usize::BITS as usize].store(
             mask & !(1 << (idx % usize::BITS as usize)),
-            Ordering::Relaxed,
+            Ordering::Release,
         ) /* [Rb] */;
 
         self.in_use -= 1;
