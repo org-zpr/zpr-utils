@@ -1,6 +1,6 @@
 [package]
 name = "zpr-ext"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2024"
 rust-version = "1.98.1"
 license = "Apache-2.0"
@@ -8,7 +8,7 @@ license = "Apache-2.0"
 [dependencies]
 bytes = { version = "1.11.1", optional = true }
 libc = { version = "0.2.175" }
-nix = { version = "0.29.0", features = ["ioctl", "net", "socket"] }
+nix = { version = "0.31", features = ["ioctl", "net", "socket"] }
 socket2 = { version = "0.5.7", optional = true }
 tokio = { version = "1.48.0", features = ["net"], optional = true }
 zerocopy = { version = "0.8.3", optional = true }
