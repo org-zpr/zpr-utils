@@ -730,7 +730,7 @@ impl<T> Cslab<T> {
 
         // add entry to front of freelist
         // SAFETY: we have removed the item
-        entry.next_free = self.first_free as isize - idx as isize;
+        entry.next_free = self.first_free as isize - idx as isize - 1;
         self.first_free = idx;
 
         self.allocated -= 1;
@@ -809,6 +809,28 @@ mod tests {
         let ii = slab.insert(345).unwrap();
         assert_eq!(ii, i);
         assert_eq!(*slab.get(ii).unwrap(), 345);
+    }
+
+    #[test]
+    fn removal_freelist_reuse_test() {
+        let mut slab = Cslab::with_fixed_capacity(4);
+        for value in 0..4 {
+            slab.insert(value).unwrap();
+        }
+        for idx in [1, 3] {
+            // SAFETY: there are no readers, and each marked item is finalized once.
+            unsafe {
+                slab.mark_removed(idx);
+                slab.finalize_remove(idx);
+            }
+        }
+        assert_eq!(slab.insert(30).unwrap(), 3);
+        assert_eq!(slab.insert(10).unwrap(), 1);
+        assert!(slab.insert(99).is_err());
+        assert_eq!(
+            slab.iter().map(|(_, &value)| value).collect::<Vec<_>>(),
+            vec![0, 10, 2, 30]
+        );
     }
 
     #[test]
@@ -943,6 +965,217 @@ mod tests {
         }
         assert!(it.next_back().is_none());
     }
+
+    #[test]
+    fn rcu_iter_mut_selective_removal_test() {
+        let mut slab = RcuCslab::with_fixed_capacity(130);
+        for value in 0..130 {
+            assert_eq!(slab.insert(value).unwrap(), value);
+        }
+        slab.mark_removed(65);
+        let old_reader = slab.reader();
+
+        let mut iter = slab.iter_mut();
+        assert_eq!(iter.len(), 129);
+        let first = iter.next().unwrap();
+        assert_eq!(first.key(), 0);
+        assert_eq!(*first, 0);
+        first.remove();
+        let last = iter.next_back().unwrap();
+        assert_eq!(last.key(), 129);
+        last.remove();
+        assert_eq!(iter.size_hint(), (127, Some(127)));
+        let mut visited = vec![0, 129];
+        while let Some(entry) = iter.next() {
+            visited.push(entry.key());
+            if *entry % 2 == 0 {
+                entry.remove();
+            }
+        }
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        assert!(iter.next().is_none());
+        drop(iter);
+        visited.sort_unstable();
+        assert_eq!(
+            visited,
+            (0..130).filter(|&idx| idx != 65).collect::<Vec<_>>()
+        );
+
+        let new_reader = slab.reader();
+        let next_gen = old_reader
+            .r#gen
+            .inner
+            .lock()
+            .unwrap()
+            .next_gen
+            .clone()
+            .unwrap();
+        assert!(Arc::ptr_eq(&next_gen, &new_reader.r#gen));
+        assert!(new_reader.r#gen.inner.lock().unwrap().next_gen.is_none());
+        drop(next_gen);
+        assert_eq!(
+            slab.iter().map(|(_, &value)| value).collect::<Vec<_>>(),
+            (1..129)
+                .filter(|&value| value != 65 && value % 2 != 0)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(slab.allocated(), 130);
+        // SAFETY: this reader saw the items before they were removed.
+        assert_eq!(unsafe { old_reader.get_unchecked(0) }, &0);
+        assert_eq!(unsafe { old_reader.get_unchecked(129) }, &129);
+        drop(old_reader);
+        assert_eq!(slab.allocated(), slab.len());
+        assert!(slab.insert(999).is_ok());
+    }
+
+    #[test]
+    fn rcu_iter_mut_retained_proxies_test() {
+        let dropped = std::cell::Cell::new(0);
+        let dropper = || dropped.set(dropped.get() + 1);
+        let mut slab = RcuCslab::with_fixed_capacity(3);
+        for value in 0..3 {
+            slab.insert((value, OnDrop(&dropper))).unwrap();
+        }
+
+        let generation = Arc::downgrade(&slab.cur_gen);
+        let mut iter = slab.iter_mut();
+        let first = iter.next().unwrap();
+        let second = iter.next().unwrap();
+        drop(iter);
+        {
+            let generation = generation.upgrade().unwrap();
+            let inner = generation.inner.lock().unwrap();
+            let next_gen = inner.next_gen.as_ref().unwrap();
+            assert!(next_gen.inner.lock().unwrap().next_gen.is_none());
+        }
+        assert_eq!(first.0, 0);
+        first.remove();
+        assert_eq!(dropped.get(), 0);
+        assert_eq!(second.0, 1);
+        second.remove();
+        assert!(generation.upgrade().is_none());
+        assert_eq!(dropped.get(), 2);
+        assert_eq!(slab.len(), 1);
+        assert_eq!(slab.allocated(), 1);
+        assert_eq!(slab.get(2).unwrap().0, 2);
+        drop(slab);
+        assert_eq!(dropped.get(), 3);
+    }
+
+    #[test]
+    fn rcu_iter_mut_early_exit_test() {
+        let mut slab = RcuCslab::with_fixed_capacity(4);
+        for value in 0..4 {
+            slab.insert(value).unwrap();
+        }
+        for entry in slab.iter_mut() {
+            entry.remove();
+            break;
+        }
+        assert_eq!(slab.len(), 3);
+        assert_eq!(slab.allocated(), 3);
+        assert_eq!(slab.get(0), None);
+        assert_eq!(slab.get(1), Some(&1));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut iter = slab.iter_mut();
+            iter.next().unwrap().remove();
+            panic!("exit iteration");
+        }));
+        assert!(result.is_err());
+        assert_eq!(slab.len(), 2);
+        assert_eq!(slab.allocated(), 2);
+        assert_eq!(slab.get(1), None);
+    }
+
+    #[test]
+    fn rcu_iter_mut_no_removal_test() {
+        let mut slab = RcuCslab::with_fixed_capacity(2);
+        let old_reader = slab.reader();
+        let mut iter = slab.iter_mut();
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
+        drop(iter);
+        let next_gen = old_reader
+            .r#gen
+            .inner
+            .lock()
+            .unwrap()
+            .next_gen
+            .clone()
+            .unwrap();
+        assert!(Arc::ptr_eq(&next_gen, &slab.cur_gen));
+
+        slab.insert(123).unwrap();
+        slab.insert(456).unwrap();
+        assert_eq!(
+            slab.iter_mut().map(|entry| *entry).collect::<Vec<_>>(),
+            vec![123, 456]
+        );
+        assert_eq!(slab.len(), 2);
+        assert_eq!(slab.allocated(), 2);
+    }
+
+    #[test]
+    fn rcu_clear_test() {
+        let dropped = std::cell::Cell::new(0);
+        let dropper = || dropped.set(dropped.get() + 1);
+        let mut slab = RcuCslab::with_fixed_capacity(130);
+        for _ in 0..130 {
+            slab.insert(OnDrop(&dropper)).unwrap();
+        }
+        let oldest_reader = slab.reader();
+        slab.mark_removed(1);
+        let middle_reader = slab.schedule_finalization();
+        slab.mark_removed(64);
+        let new_reader = slab.clear();
+        assert_eq!(slab.len(), 0);
+        assert_eq!(slab.allocated(), 130);
+        assert_eq!(slab.capacity(), 130);
+        assert_eq!(dropped.get(), 0);
+        assert!(new_reader.iter().next().is_none());
+        assert!((0..130).all(|idx| !new_reader.contains_key(idx)));
+        assert!(slab.vacant_key().is_err());
+        {
+            let inner = middle_reader.r#gen.inner.lock().unwrap();
+            let next_gen = inner.next_gen.as_ref().unwrap();
+            assert!(Arc::ptr_eq(next_gen, &new_reader.r#gen));
+            assert!(next_gen.inner.lock().unwrap().next_gen.is_none());
+        }
+        drop(middle_reader);
+        assert_eq!(dropped.get(), 0);
+        drop(oldest_reader);
+        assert_eq!(dropped.get(), 130);
+        assert_eq!(slab.allocated(), 0);
+        drop(new_reader);
+        for _ in 0..130 {
+            slab.insert(OnDrop(&dropper)).unwrap();
+        }
+        drop(slab.clear());
+        assert_eq!(dropped.get(), 260);
+        assert_eq!(slab.allocated(), 0);
+        drop(slab);
+        assert_eq!(dropped.get(), 260);
+    }
+
+    #[test]
+    fn rcu_clear_empty_with_pending_removals_test() {
+        let mut slab = RcuCslab::with_fixed_capacity(1);
+        let idx = slab.insert(123).unwrap();
+        slab.mark_removed(idx);
+        assert_eq!(slab.len(), 0);
+        assert_eq!(slab.allocated(), 1);
+        let reader = slab.clear();
+        assert!(reader.get(idx).is_none());
+        assert_eq!(slab.allocated(), 0);
+        drop(slab.clear());
+        assert_eq!(slab.len(), 0);
+        assert_eq!(slab.allocated(), 0);
+        assert_eq!(slab.insert(456).unwrap(), idx);
+    }
 }
 
 #[cfg(all(test, loom))]
@@ -997,6 +1230,36 @@ mod loom_tests {
             unsafe {
                 slab.finalize_remove(idx);
             }
+        });
+    }
+
+    #[test]
+    fn concurrent_rcu_iter_mut_get_test() {
+        model(|| {
+            let mut slab = RcuCslab::with_fixed_capacity(2);
+            slab.insert(123).unwrap();
+            slab.insert(456).unwrap();
+            let reader = slab.reader();
+            let thread = thread::spawn(move || {
+                // SAFETY: the items were inserted before this reader was created.
+                let first = unsafe { reader.get_unchecked(0) };
+                let second = unsafe { reader.get_unchecked(1) };
+                thread::yield_now();
+                assert_eq!(*first, 123);
+                assert_eq!(*second, 456);
+            });
+
+            for entry in slab.iter_mut() {
+                if entry.key() == 0 {
+                    entry.remove();
+                }
+            }
+            let reader = slab.reader();
+            assert_eq!(reader.get(0), None);
+            assert_eq!(reader.get(1), Some(&456));
+            thread.join().unwrap();
+            assert_eq!(slab.allocated(), 1);
+            assert_eq!(slab.insert(789).unwrap(), 0);
         });
     }
 }
@@ -1062,6 +1325,17 @@ struct RcuCslabGen<T> {
 
     // the actual generation info, protected by a mutex
     inner: Mutex<RcuCslabGenInner<T>>,
+}
+
+impl<T> RcuCslabGen<T> {
+    fn mark_removed(&self, idx: usize) {
+        // SAFETY: this generation keeps the item allocated until its drop
+        // finalizes every removal recorded below.
+        unsafe {
+            self.writer.lock().unwrap().mark_removed(idx);
+        }
+        self.inner.lock().unwrap().pending_removes.push(idx);
+    }
 }
 
 impl<T> Drop for RcuCslabGen<T> {
@@ -1281,6 +1555,38 @@ impl<T> RcuCslab<T> {
         ExclIter::new(&self.reader.0, self.len())
     }
 
+    /// Returns an iterator over proxies which can selectively remove items.
+    ///
+    /// Each proxy provides its index through [`RcuEntry::key()`], shared
+    /// access to its value through `Deref`, and a consuming
+    /// [`RcuEntry::remove()`] method. Values cannot be mutated because readers
+    /// may still be accessing them.
+    ///
+    /// Finalization is scheduled once when the iterator is dropped, including
+    /// on early exit, and waits for all its proxies to be dropped.
+    /// Obtain a new reader with
+    /// [`Self::reader()`] afterward to communicate the removals to readers.
+    ///
+    /// ```
+    /// let mut slab = cslab::RcuCslab::with_fixed_capacity(4);
+    /// slab.insert(10).unwrap();
+    /// slab.insert(11).unwrap();
+    /// for entry in slab.iter_mut() {
+    ///     if *entry % 2 == 0 {
+    ///         entry.remove();
+    ///     }
+    /// }
+    /// assert_eq!(slab.iter().map(|(_, value)| *value).collect::<Vec<_>>(), vec![11]);
+    /// ```
+    pub fn iter_mut(&mut self) -> RcuIterMut<'_, T> {
+        let remaining = self.len();
+        RcuIterMut {
+            iter: Iter::new(&self.reader.0),
+            cur_gen: &mut self.cur_gen,
+            remaining,
+        }
+    }
+
     /// Return a clonable read-only handle to the slab, associated with the
     /// current generation.
     ///
@@ -1339,14 +1645,7 @@ impl<T> RcuCslab<T> {
     /// of future generations, and _may_ appear empty to readers of the
     /// current or previous generations.
     pub fn mark_removed(&mut self, idx: usize) {
-        // NOTE: order here doesn't matter; no-one will do anything with
-        // `pending_removes` until `collect()` (which is mut) releases the references
-        // to `cur_gen`
-        // SAFETY: we eventually call `finalize_remove()` on drop
-        unsafe {
-            self.writer.lock().unwrap().mark_removed(idx);
-        }
-        self.cur_gen.inner.lock().unwrap().pending_removes.push(idx);
+        self.cur_gen.mark_removed(idx);
     }
 
     /// Schedule removal finalization of the current generation, and create
@@ -1362,8 +1661,13 @@ impl<T> RcuCslab<T> {
     /// last such reference.  (Or, if there are no such remaining references,
     /// finalization will occur immediately during this method call.)
     pub fn schedule_finalization(&mut self) -> RcuCslabReader<T> {
+        Self::advance_generation(&mut self.cur_gen);
+        self.reader()
+    }
+
+    fn advance_generation(cur_gen: &mut Arc<RcuCslabGen<T>>) {
         let next_gen = Arc::new(RcuCslabGen {
-            writer: self.writer.clone(),
+            writer: cur_gen.writer.clone(),
             inner: Mutex::new(RcuCslabGenInner {
                 pending_removes: Vec::new(),
                 next_gen: None,
@@ -1371,7 +1675,7 @@ impl<T> RcuCslab<T> {
         });
 
         {
-            let mut cur_gen_inner = self.cur_gen.inner.lock().unwrap();
+            let mut cur_gen_inner = cur_gen.inner.lock().unwrap();
             debug_assert!(cur_gen_inner.next_gen.is_none());
             cur_gen_inner.next_gen = Some(next_gen.clone());
         }
@@ -1380,9 +1684,7 @@ impl<T> RcuCslab<T> {
         // Note that if no other references remain to the previous generation,
         // the finalization will be performed immedaitely here.
         // Hence we are careful not to hold any locks.
-        self.cur_gen = next_gen;
-
-        self.reader()
+        *cur_gen = next_gen;
     }
 
     /// A convenience method for marking and scheduling finalization of a single item.
@@ -1392,6 +1694,103 @@ impl<T> RcuCslab<T> {
     pub fn remove(&mut self, idx: usize) -> RcuCslabReader<T> {
         self.mark_removed(idx);
         self.schedule_finalization()
+    }
+
+    /// Removes all elements and schedules finalization once.
+    ///
+    /// Returns a reader via which all removals are visible. Removed elements
+    /// remain allocated until all older readers have been dropped.
+    pub fn clear(&mut self) -> RcuCslabReader<T> {
+        for entry in self.iter_mut() {
+            entry.remove();
+        }
+        self.reader()
+    }
+}
+
+/// Iterator over removable entries in an [`RcuCslab`].
+///
+/// Finalization is scheduled once when the iterator is dropped, and waits for
+/// all returned entries to be dropped. Dropping the iterator early leaves
+/// unvisited entries unchanged.
+pub struct RcuIterMut<'a, T> {
+    iter: Iter<'a, T>,
+    cur_gen: &'a mut Arc<RcuCslabGen<T>>,
+    remaining: usize,
+}
+
+impl<T> Drop for RcuIterMut<'_, T> {
+    fn drop(&mut self) {
+        RcuCslab::advance_generation(self.cur_gen);
+    }
+}
+
+impl<'a, T> Iterator for RcuIterMut<'a, T> {
+    type Item = RcuEntry<'a, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (idx, value) = self.iter.next()?;
+        self.remaining -= 1;
+        Some(RcuEntry {
+            idx,
+            value,
+            r#gen: self.cur_gen.clone(),
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<T> DoubleEndedIterator for RcuIterMut<'_, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let (idx, value) = self.iter.next_back()?;
+        self.remaining -= 1;
+        Some(RcuEntry {
+            idx,
+            value,
+            r#gen: self.cur_gen.clone(),
+        })
+    }
+}
+
+impl<T> ExactSizeIterator for RcuIterMut<'_, T> {}
+impl<T> std::iter::FusedIterator for RcuIterMut<'_, T> {}
+
+/// A removable entry yielded by [`RcuCslab::iter_mut()`].
+///
+/// Dropping an entry without calling [`Self::remove()`] leaves it unchanged.
+/// Keeping an entry alive delays the generation's finalization, so it remains safe
+/// to inspect or remove the entry even after dropping the iterator.
+pub struct RcuEntry<'a, T> {
+    idx: usize,
+    value: &'a T,
+    // The exclusive slab borrow prevents exposing the next generation to new
+    // readers until all proxies are gone, even if the iterator is dropped first.
+    r#gen: Arc<RcuCslabGen<T>>,
+}
+
+impl<T> RcuEntry<'_, T> {
+    /// Returns this entry's index in the slab.
+    pub fn key(&self) -> usize {
+        self.idx
+    }
+
+    /// Marks this entry for removal, consuming the proxy.
+    ///
+    /// Finalization is deferred until the iterator and all other proxies
+    /// have been dropped, and all older readers have been released.
+    pub fn remove(self) {
+        self.r#gen.mark_removed(self.idx);
+    }
+}
+
+impl<T> std::ops::Deref for RcuEntry<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value
     }
 }
 
