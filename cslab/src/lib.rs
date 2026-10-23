@@ -1070,10 +1070,7 @@ mod tests {
         for value in 0..4 {
             slab.insert(value).unwrap();
         }
-        for entry in slab.iter_mut() {
-            entry.remove();
-            break;
-        }
+        slab.iter_mut().next().unwrap().remove();
         assert_eq!(slab.len(), 3);
         assert_eq!(slab.allocated(), 3);
         assert_eq!(slab.get(0), None);
