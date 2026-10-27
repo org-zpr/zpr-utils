@@ -1,4 +1,19 @@
 //! An RCU-friendly concurrent slab
+//!
+//! The slab is `Send`/`Sync` only for payloads that are themselves
+//! thread-safe. A non-`Send` payload cannot cross threads inside a handle:
+//!
+//! ```compile_fail
+//! fn require_send<T: Send>() {}
+//! require_send::<cslab::CslabReader<std::rc::Rc<u8>>>();
+//! ```
+//!
+//! and a non-`Sync` payload cannot be shared through the slab:
+//!
+//! ```compile_fail
+//! fn require_sync<T: Sync>() {}
+//! require_sync::<cslab::Cslab<std::cell::Cell<u8>>>();
+//! ```
 
 #[cfg(loom)]
 use loom::alloc::{self, Layout};
@@ -300,9 +315,13 @@ impl<T> Drop for CslabStorage<T> {
     }
 }
 
-// SAFETY: `CslabStorage` is explicitly designed to be accessed between threads
-unsafe impl<T> Send for CslabStorage<T> {}
-unsafe impl<T> Sync for CslabStorage<T> {}
+// SAFETY: the storage owns its items and drops them in `Drop`, so moving the
+// storage to another thread moves and drops `T` there: `T: Send` is required.
+unsafe impl<T: Send> Send for CslabStorage<T> {}
+// SAFETY: a shared storage hands out `&T` across threads (`T: Sync`), and
+// items inserted on the writer thread can be finalized/dropped on whatever
+// thread releases the last `Arc` (`T: Send`).
+unsafe impl<T: Send + Sync> Sync for CslabStorage<T> {}
 
 fn get_impl<T>(storage: &CslabStorage<T>, idx: usize) -> Option<&T> {
     if contains_key_impl(storage, idx) {
@@ -762,6 +781,25 @@ impl<T> VacantEntry<'_, T> {
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+
+    // Compile-time check: thread-safe payloads keep the slab thread-safe
+    // (guards against over-restricting the manual Send/Sync impls).
+    // The converse (non-thread-safe payloads are rejected) is checked by the
+    // `compile_fail` doctests in the crate-level documentation.
+    #[test]
+    fn send_sync_bounds() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        assert_send::<Cslab<String>>();
+        assert_sync::<Cslab<String>>();
+        assert_send::<CslabReader<String>>();
+        assert_sync::<CslabReader<String>>();
+        assert_send::<RcuCslab<String>>();
+        assert_sync::<RcuCslab<String>>();
+        assert_send::<RcuCslabReader<String>>();
+        assert_sync::<RcuCslabReader<String>>();
+    }
 
     #[test]
     fn basic_test() {
